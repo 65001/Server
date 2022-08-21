@@ -7,9 +7,9 @@
 use clap::{Arg, App, AppSettings};
 
 mod server;
+mod http;
 
-// cargo build
-//./server.exe -p 8080 
+// cargo build && server_unit_test_pserv.py -vs ~/CS3214/Project4Rust/Server/target/debug/server
 fn main() {
     //We use clap to build an argument parser
     let matches = App::new("Personal Server")
