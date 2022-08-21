@@ -4,17 +4,9 @@
     (C) August 20, 2022.
 */
 
-use std::env;
 use clap::{Arg, App, AppSettings};
 
-struct Config {
-    html5_fallback: bool, 
-    silent_mode: bool,
-    token_expiration_time: u32, 
-    server_root : String, 
-    server_secret: String
-}
-
+mod server;
 
 // cargo build
 //./server.exe -p 8080 
@@ -23,7 +15,7 @@ fn main() {
     let matches = App::new("Personal Server")
     .setting(AppSettings::ArgRequiredElseHelp)
     .version("0.1.0")
-    .author("Ab")
+    .author("Abhishek Sathiabalan")
     .about("My port of my CS3214 assignment in Rust")
     .arg(Arg::with_name("port")
         .short('p')
@@ -42,18 +34,58 @@ fn main() {
         .help("expiration time for tokens in seconds"))
     .arg(Arg::with_name("silent")
         .short('s')
+        .takes_value(false)
         .help("Silent Mode"))
     .arg(Arg::with_name("fallback")
         .short('a')
+        .takes_value(false)
         .help("Enables HTML5 fallback"))
     .get_matches();
 
     let mut fallback : bool = false;
     let mut silence : bool = false;
     let mut expiration_time : u32 = 24 * 60 * 60;
+    let mut port: u32 = 10000;
     let mut path : String = ".".to_string();
     let server_secret : String = "TOP+SECRET/MESSAGE".to_string();
 
-    let args: Vec<String> = env::args().collect();
-    print!("{:?}", args);
+    //These arguments require some processing
+    if let Some(c) = matches.get_one::<String>("port") {
+        match c.parse::<u32>() {
+            Ok(n) => port = n,
+            Err(_) => panic!("Port flag is not set to a number."),
+        }
+    }
+
+    if let Some(c) = matches.get_one::<String>("seconds") {
+        match c.parse::<u32>() {
+            Ok(n) => expiration_time = n,
+            Err(_) => panic!("Seconds flag is not set to a number."),
+        }
+    }
+
+    if let Some(c) = matches.get_one::<String>("rootdir") {
+        path = c.to_string();
+    }
+
+    if matches.contains_id("silent") {
+        silence = true;
+    }
+
+    if matches.contains_id("fallback") {
+        fallback = true;
+    }
+
+    let configuration: server::Config  = server::Config {
+        html5_fallback: fallback,
+        silent_mode: silence,
+        token_expiration_time: expiration_time,
+        server_root: path,
+        port_number: port,
+        server_secret: server_secret
+    };
+
+    let server = server::Server::new(configuration);
+    server.start();
+    
 }
