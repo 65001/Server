@@ -13,6 +13,7 @@ pub struct Config {
     pub server_secret: String
 }
 
+#[derive(Debug)]
 pub struct Server {
     configuration: Config,
 }
@@ -24,19 +25,20 @@ impl Server {
     }
 
     pub fn start(&self) {
-        println!("{:#?}", self.configuration);
+        println!("{:?}", self);
         let listener = TcpListener::bind(format!("[::]:{}", self.configuration.port_number)).unwrap();
         for stream in listener.incoming() {
             let stream = stream.unwrap();
             thread::spawn(|| {
                 Server::worker(stream);
             });
-            println!("Connection established....");
         }
+
     }
 
     fn worker(mut stream : TcpStream) {
         //We don't handle the case when the client closes the connection all that well (?)
+        println!("Handling connection...");
         let mut transaction : Transaction = Transaction::new();
         transaction.http_handle_transaction(stream);
     }

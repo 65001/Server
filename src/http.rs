@@ -11,6 +11,7 @@ use crate::http::Version::*;
 use crate::http::ResponseStatus::*;
 
 #[derive(Debug)]
+#[derive(PartialEq)]
 enum Method {
     HttpPost,
     HttpGet,
@@ -18,12 +19,14 @@ enum Method {
 }
 
 #[derive(Debug)]
+#[derive(PartialEq)]
 enum Version {
     Http1_0,
     Http1_1
 }
 
 #[derive(Debug)]
+#[derive(PartialEq)]
 enum ResponseStatus {
     HttpOk = 200,
     HttpPartialContent = 206,
@@ -46,12 +49,12 @@ pub struct Transaction {
     path: Option<String>,
     body: Option<String>, 
     content_length: u32, 
-    http_response_status : ResponseStatus, 
+    resp_status : ResponseStatus, 
 
     req_headers: HashMap<String, String>,
 
-    resp_headers : Vec< (String, String) >, 
-    resp_body : Option<String>, 
+    resp_headers : Vec<String>, 
+    resp_body : Vec<String>, 
 
     jwt: Option<String>, 
 
@@ -64,19 +67,22 @@ impl Transaction {
         Self {
             method : HttpUnknown,
             version : Http1_0,
-            http_response_status : HttpInternalError, 
+            resp_status : HttpInternalError, 
             jwt: None,
             body: None,
             path: None,
             range_start: 0,
             range_end: 0,
             content_length: 0,
-            resp_body: None,
+            resp_body: Vec::new(),
             resp_headers: Vec::new(),
             req_headers: HashMap::new(),
         }
     }
 
+    /*
+    Parsing Section
+    */
     fn parse_request<R: BufRead>(&mut self, r: &mut R) -> bool {
         let mut line = String::new();
         let mut len = r.read_line(&mut line).unwrap();
@@ -92,7 +98,7 @@ impl Transaction {
         //This means we don't have the Method, the path, or the Version
         //Therefore we MUST close the connection
         if split.len() < 3 {
-            println!("SPLIT: {:?}, {:?}", split, line);
+            println!("SPLIT 123: {:?}, {:?}", split, line);
             return false;
         }
 
@@ -103,7 +109,7 @@ impl Transaction {
             self.method = HttpPost;
         }
         else {
-            println!("SPLIT: {:?}", split);
+            println!("SPLIT 456: {:?}", split);
         }
 
         self.path = Some(split[1].to_string());
@@ -117,7 +123,6 @@ impl Transaction {
     fn parse_headers<R: BufRead>(&mut self, r: &mut R) -> bool {
         for l in r.lines() {
             let mut line = l.unwrap();
-            println!("{}", line);
             if line == "" {
                 return true;
             }
@@ -136,30 +141,154 @@ impl Transaction {
                 _ => {}
             }
 
-            self.req_headers.insert( key.to_string(), value );
-
-            
-
-            
+            self.req_headers.insert( key.to_string(), value ); 
         }
         return true;
     }
 
-    pub fn http_handle_transaction(&mut self, mut stream : TcpStream) -> bool {
-        let mut req_buffer = BufReader::new(&stream);
-        if !self.parse_request(&mut req_buffer) || !self.parse_headers(&mut req_buffer) {
+    /*
+    Sending Response Section
+    */
+    fn send_error<W: Write>(&mut self, status : ResponseStatus, message : &str, stream : W) -> bool{
+        self.resp_body.push(message.to_string());
+        self.add_header("Content-Type", "text/plain");
+        self.resp_status = status;
+        return self.send_response(stream);
+    }
+
+    fn start_response(&self) -> String {
+        let mut string  : Vec<&str> = Vec::new();
+        string.push("HTTP/1.1 ");
+        match self.resp_status {
+            HttpOk => string.push("200 OK"),
+            HttpPartialContent => string.push("206 Partial Content"),
+            HttpBadRequest => string.push("400 Bad Request"),
+            HttpPermissionDenied => string.push("403 Permission Denied"),
+            HttpNotFound => string.push("404 Not Found"),
+            HttpMethodNotAllowed => string.push("405 Method Not Allowed"),
+            HttpRequestTimeout => string.push("408 Request Timeout"),
+            HttpRequestTooLong => string.push("414 Request Too Long"),
+            HttpInternalError => string.push("500 Internal Server Error"),
+            HttpNotImplemented => string.push("501 Not Implemented"),
+            HttpServiceUnavailable => string.push("503 Service Unavailable")
+        };
+        string.push("\r\n");
+        return string.join("");
+    }
+
+    fn send_response<W: Write>(&mut self, mut stream : W) -> bool {
+        let mut sb : Vec<String> = Vec::new();
+        sb.push(self.start_response());
+
+        let body = self.resp_body.join("");
+        
+        self.add_header("Content-Length", &body.len().to_string());
+        sb.push(self.resp_headers.join(""));
+
+        sb.push("\r\n".to_string());
+        sb.push(body);
+        let response : String = sb.join("");
+
+        match stream.write(response.as_bytes()) {
+            Ok(_) => {println!("Response sent {:#?}", response)},
+            Err(e) => println!("Failed sending response: {}", e),
+        }
+        stream.flush().unwrap();
+        return true;
+    }
+
+    fn verify_jwt(&self) -> bool {
+        if self.jwt == None {
             return false;
         }
+        //TODO: Add more JWT verification later
+        return true;
+    }
 
-        //Load the HTTP REQ_BODY 
+    fn handle_api<W: Write>(&mut self, stream : W) {
+        println!("In Handle API.");
+        let path = self.path.as_ref().unwrap();
+        if path == "/api/login" {
+            self.handle_api_login(stream);
+        }
+        else if path == "/api/video" {
 
-        let response = "HTTP/1.1 200 OK\r\n\r\n{}";
-        stream.write( response.as_bytes() ).unwrap();
-        stream.flush().unwrap();
+        }
+    }
+
+    fn handle_api_login<W: Write>(&mut self, stream : W) -> bool {
+        println!("IN handle api login");
+        if self.method == HttpGet {
+            self.add_header("Content-Type", "application/json");
+
+            if self.verify_jwt() {
+
+            }
+            else {
+                self.resp_body.push("{}".to_string());
+            }
+            self.resp_status = HttpOk;
+            return self.send_response(stream);
+        }
+        else if self.method == HttpPost {
+            self.add_header("Content-Type", "application/json");
+
+
+        }
+        return self.send_error(HttpNotImplemented,"API Method not Implemented", stream);
+    }
+
+    fn add_header(&mut self,  key : &str,  value : &str) {
+        self.resp_headers.push( key.to_string() + ": " + &value.to_string() + "\r\n" );
+    }
+
+
+
+    pub fn http_handle_transaction(&mut self, mut stream : TcpStream) -> bool {
+        loop {
+            let mut req_buffer = BufReader::new(&stream);
+            let mut resp_buffer = BufWriter::new(&stream);
+            if   !self.parse_request(&mut req_buffer) || !self.parse_headers(&mut req_buffer)  {
+                return false;
+            }
+            
+            println!("After Parsing: {:?}", self);
+            //TODO: Load the HTTP REQ_BODY 
+
+            if self.content_length > 0 {
+                let http_request: Vec<_> = req_buffer
+                .lines()
+                .map(|result| result.unwrap())
+                .take_while(|line| !line.is_empty())
+                .collect();
+
+                let body : String = http_request.join("");
+                self.body = Some(body);
+            }
+
+            self.add_header("Server", "CS3214-Personal-Server");
+            println!("After Header: {:?}", self);
+            let path = self.path.as_ref().unwrap();
+
+            if path.starts_with("/api") {
+                self.handle_api(resp_buffer);
+            }
+
+            /*
+            let response = "HTTP/1.1 200 OK\r\n\r\n{}";
+            stream.write( response.as_bytes() ).unwrap();
+            stream.flush().unwrap();
+            */
+            if self.version == Http1_0 {
+                return true;
+            }
+            println!("{:?}", self);
+            self.resp_body.clear();
+            self.resp_headers.clear();
+            self.req_headers.clear(); 
         
 
-        println!("{:#?}", self);
-
+        }
         return false;
     }
 }
