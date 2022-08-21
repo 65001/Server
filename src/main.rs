@@ -8,6 +8,7 @@ use clap::{Arg, App, AppSettings};
 
 mod server;
 mod http;
+mod credentials;
 
 // cargo build && server_unit_test_pserv.py -vs ~/CS3214/Project4Rust/Server/target/debug/server
 fn main() {

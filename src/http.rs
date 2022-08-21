@@ -2,13 +2,20 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
+use std::io::Read;
 use std::net::TcpStream;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::http::Method::*;
 use crate::http::Version::*;
 use crate::http::ResponseStatus::*;
+
+use crate::credentials::Credentials;
+use serde_json::Result;
+use jwt_simple::prelude::*;
+use crate::server::Config;
 
 #[derive(Debug)]
 #[derive(PartialEq)]
@@ -27,6 +34,7 @@ enum Version {
 
 #[derive(Debug)]
 #[derive(PartialEq)]
+#[allow(dead_code)]
 enum ResponseStatus {
     HttpOk = 200,
     HttpPartialContent = 206,
@@ -48,7 +56,7 @@ pub struct Transaction {
 
     path: Option<String>,
     body: Option<String>, 
-    content_length: u32, 
+    content_length: usize, 
     resp_status : ResponseStatus, 
 
     req_headers: HashMap<String, String>,
@@ -60,10 +68,12 @@ pub struct Transaction {
 
     range_start :u32, 
     range_end: u32, 
+
+    config: Arc<Config>
 }
 
 impl Transaction {
-    pub fn new() -> Self {
+    pub fn new(con : Arc<Config>) -> Self {
         Self {
             method : HttpUnknown,
             version : Http1_0,
@@ -77,6 +87,7 @@ impl Transaction {
             resp_body: Vec::new(),
             resp_headers: Vec::new(),
             req_headers: HashMap::new(),
+            config: con
         }
     }
 
@@ -190,11 +201,21 @@ impl Transaction {
         let response : String = sb.join("");
 
         match stream.write(response.as_bytes()) {
-            Ok(_) => {println!("Response sent {:#?}", response)},
+            Ok(_) => {println!("> {:?}", response)},
             Err(e) => println!("Failed sending response: {}", e),
         }
         stream.flush().unwrap();
         return true;
+    }
+
+    fn handle_api<W: Write>(&mut self, stream : W) {
+        let path = self.path.as_ref().unwrap();
+        if path == "/api/login" {
+            self.handle_api_login(stream);
+        }
+        else if path == "/api/video" {
+
+        }
     }
 
     fn verify_jwt(&self) -> bool {
@@ -205,19 +226,12 @@ impl Transaction {
         return true;
     }
 
-    fn handle_api<W: Write>(&mut self, stream : W) {
-        println!("In Handle API.");
-        let path = self.path.as_ref().unwrap();
-        if path == "/api/login" {
-            self.handle_api_login(stream);
-        }
-        else if path == "/api/video" {
+    fn generate_jwt(&mut self) {
+        let key = HS256Key::from_bytes( self.config.server_secret.as_bytes());
 
-        }
     }
 
     fn handle_api_login<W: Write>(&mut self, stream : W) -> bool {
-        println!("IN handle api login");
         if self.method == HttpGet {
             self.add_header("Content-Type", "application/json");
 
@@ -232,8 +246,28 @@ impl Transaction {
         }
         else if self.method == HttpPost {
             self.add_header("Content-Type", "application/json");
-
-
+            if self.body == None {
+                self.send_error(HttpBadRequest, "No Body sent on POST request to /api/login", stream);
+                return false;
+            }
+            let json : String = self.body.as_ref().unwrap().to_string();
+            let c: Result<Credentials> = serde_json::from_str(&json);
+            match c {
+                Err(E) => {
+                    self.send_error(HttpBadRequest, "Missing key/value pairs in the request body.", stream);
+                    return false;
+                },
+                Ok(d) => {
+                    if !d.valid() {
+                        //Invalid credentials
+                        println!("Invalid credentials. Denying access.");
+                        self.send_error(HttpPermissionDenied, "Access denied.", stream);
+                        return false;
+                    }
+                    //TODO: Generate NEW JWT
+                    self.generate_jwt();
+                }
+            }
         }
         return self.send_error(HttpNotImplemented,"API Method not Implemented", stream);
     }
@@ -252,24 +286,23 @@ impl Transaction {
                 return false;
             }
             
-            println!("After Parsing: {:?}", self);
             //TODO: Load the HTTP REQ_BODY 
-
+           
             if self.content_length > 0 {
-                let http_request: Vec<_> = req_buffer
-                .lines()
-                .map(|result| result.unwrap())
-                .take_while(|line| !line.is_empty())
-                .collect();
-
-                let body : String = http_request.join("");
-                self.body = Some(body);
+                let content_length : usize = self.content_length;
+                let mut buf = vec![0u8; self.content_length];
+                req_buffer.read_exact(&mut buf);
+                let data = std::str::from_utf8(&buf);
+                match data {
+                    Err(E) =>  panic!("Could not read data/body") ,
+                    Ok(t) =>  self.body = Some(t.to_string())
+                }
             }
 
             self.add_header("Server", "CS3214-Personal-Server");
-            println!("After Header: {:?}", self);
             let path = self.path.as_ref().unwrap();
 
+            println!("{:#?}", self);
             if path.starts_with("/api") {
                 self.handle_api(resp_buffer);
             }
@@ -282,12 +315,20 @@ impl Transaction {
             if self.version == Http1_0 {
                 return true;
             }
-            println!("{:?}", self);
+            //println!("{:#?}", self);
+            //Reset the state of the Transaction 
             self.resp_body.clear();
             self.resp_headers.clear();
             self.req_headers.clear(); 
-        
-
+            self.content_length = 0;
+            self.range_start = 0;
+            self.range_end = 0;
+           
+            self.resp_status = HttpInternalError;
+            self.method = HttpUnknown;
+            self.jwt = None;
+            self.path = None; 
+            self.body = None;
         }
         return false;
     }

@@ -1,9 +1,12 @@
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
+use std::sync::Arc;
+
 use crate::http::Transaction;
 
 #[derive(Debug)]
+#[derive(Clone)]
 pub struct Config {
     pub html5_fallback: bool, 
     pub silent_mode: bool,
@@ -15,31 +18,30 @@ pub struct Config {
 
 #[derive(Debug)]
 pub struct Server {
-    configuration: Config,
+    configuration: Arc<Config>,
 }
 
 
 impl Server {
     pub fn new(value: Config) -> Self {
-        Self {configuration: value}
+        Self {configuration: Arc::new(value) }
     }
 
     pub fn start(&self) {
-        println!("{:?}", self);
         let listener = TcpListener::bind(format!("[::]:{}", self.configuration.port_number)).unwrap();
         for stream in listener.incoming() {
             let stream = stream.unwrap();
-            thread::spawn(|| {
-                Server::worker(stream);
+            let data : Arc<Config> = self.configuration.clone();
+            thread::spawn(move || {
+                Server::worker(stream,  data);
             });
         }
 
     }
 
-    fn worker(mut stream : TcpStream) {
+    fn worker(mut stream : TcpStream, config : Arc<Config>) {
         //We don't handle the case when the client closes the connection all that well (?)
-        println!("Handling connection...");
-        let mut transaction : Transaction = Transaction::new();
+        let mut transaction : Transaction = Transaction::new(config);
         transaction.http_handle_transaction(stream);
     }
 
