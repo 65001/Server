@@ -11,7 +11,7 @@ pub struct Config {
     pub html5_fallback: bool, 
     pub silent_mode: bool,
     pub port_number: u32,
-    pub token_expiration_time: u32, 
+    pub token_expiration_time: u64, 
     pub server_root : String, 
     pub server_secret: String
 }

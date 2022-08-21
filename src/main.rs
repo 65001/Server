@@ -44,8 +44,8 @@ fn main() {
     .get_matches();
 
     let mut fallback : bool = false;
-    let mut silence : bool = false;
-    let mut expiration_time : u32 = 24 * 60 * 60;
+    let mut silence : bool = true;
+    let mut expiration_time : u64 = 24 * 60 * 60;
     let mut port: u32 = 10000;
     let mut path : String = ".".to_string();
     let server_secret : String = "TOP+SECRET/MESSAGE".to_string();
@@ -59,7 +59,7 @@ fn main() {
     }
 
     if let Some(c) = matches.get_one::<String>("seconds") {
-        match c.parse::<u32>() {
+        match c.parse::<u64>() {
             Ok(n) => expiration_time = n,
             Err(_) => panic!("Seconds flag is not set to a number."),
         }

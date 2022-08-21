@@ -4,7 +4,6 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::io::Read;
 use std::net::TcpStream;
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -16,6 +15,8 @@ use crate::credentials::Credentials;
 use serde_json::Result;
 use jwt_simple::prelude::*;
 use crate::server::Config;
+
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
 #[derive(PartialEq)]
@@ -200,8 +201,12 @@ impl Transaction {
         sb.push(body);
         let response : String = sb.join("");
 
+        if !self.config.silent_mode {
+            println!("> {:#?}", self);
+        }
+
         match stream.write(response.as_bytes()) {
-            Ok(_) => {println!("> {:?}", response)},
+            Ok(_) => {},
             Err(e) => println!("Failed sending response: {}", e),
         }
         stream.flush().unwrap();
@@ -226,9 +231,24 @@ impl Transaction {
         return true;
     }
 
-    fn generate_jwt(&mut self) {
+    fn generate_jwt<W: Write>(&mut self,stream : W, credentials : Credentials) -> bool{
         let key = HS256Key::from_bytes( self.config.server_secret.as_bytes());
-
+        let duration = Duration::from_secs(self.config.token_expiration_time);
+        let claims = Claims::create( duration )
+            .with_subject(credentials.username);
+        let token  = key.authenticate(claims);
+        match token {
+            Ok(v) =>  {
+                let cookie_value : String = format!("auth={};Path=/", v);
+                let cookie_value_sent : &str = &cookie_value[..];
+                self.add_header("Set-Cookie", cookie_value_sent);
+                self.resp_status = HttpOk;
+                return self.send_response(stream);
+            },
+            Err(e) => panic!("Could not generate JWT")
+        }
+        println!("JWT: {:?} Duration:{:?}", token, duration);
+        return true;
     }
 
     fn handle_api_login<W: Write>(&mut self, stream : W) -> bool {
@@ -260,21 +280,26 @@ impl Transaction {
                 Ok(d) => {
                     if !d.valid() {
                         //Invalid credentials
-                        println!("Invalid credentials. Denying access.");
                         self.send_error(HttpPermissionDenied, "Access denied.", stream);
                         return false;
                     }
-                    //TODO: Generate NEW JWT
-                    self.generate_jwt();
+                    return self.generate_jwt(stream, d);
                 }
             }
         }
         return self.send_error(HttpNotImplemented,"API Method not Implemented", stream);
     }
 
+    fn handle_static_asset<W:Write>(&mut self, stream : W) -> bool {
+        let file_name = format!("{}{}",self.config.server_root, self.path.as_ref().unwrap());
+        println!("User is requesting : {}", file_name);
+        return true;
+    }
+
     fn add_header(&mut self,  key : &str,  value : &str) {
         self.resp_headers.push( key.to_string() + ": " + &value.to_string() + "\r\n" );
     }
+
 
 
 
@@ -285,9 +310,7 @@ impl Transaction {
             if   !self.parse_request(&mut req_buffer) || !self.parse_headers(&mut req_buffer)  {
                 return false;
             }
-            
-            //TODO: Load the HTTP REQ_BODY 
-           
+                       
             if self.content_length > 0 {
                 let content_length : usize = self.content_length;
                 let mut buf = vec![0u8; self.content_length];
@@ -302,9 +325,23 @@ impl Transaction {
             self.add_header("Server", "CS3214-Personal-Server");
             let path = self.path.as_ref().unwrap();
 
-            println!("{:#?}", self);
+            if !self.config.silent_mode {
+                println!("< {:#?}", self);
+            }
+            
             if path.starts_with("/api") {
                 self.handle_api(resp_buffer);
+            }
+            else if path.starts_with("/private") {
+                if !self.verify_jwt() {
+                    self.send_error(HttpPermissionDenied, "Permission denied. Please log in to access this resource.", resp_buffer);
+                }
+                else {
+                    self.handle_static_asset(resp_buffer);
+                }
+            }
+            else {
+                self.handle_static_asset(resp_buffer);
             }
 
             /*
