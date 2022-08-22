@@ -10,7 +10,7 @@ mod server;
 mod http;
 mod credentials;
 
-// cargo build && server_unit_test_pserv.py -vs ~/CS3214/Project4Rust/Server/target/debug/server
+// cargo build && server_unit_test_pserv.py -vs ./../target/debug/server
 fn main() {
     //We use clap to build an argument parser
     let matches = App::new("Personal Server")

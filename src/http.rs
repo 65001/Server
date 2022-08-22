@@ -3,6 +3,9 @@ use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
 use std::io::Read;
+use std::fs;
+use std::fs::File;
+use std::path::Path;
 use std::net::TcpStream;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -62,6 +65,7 @@ pub struct Transaction {
 
     req_headers: HashMap<String, String>,
 
+    cookies: HashMap<String, String>,
     resp_headers : Vec<String>, 
     resp_body : Vec<String>, 
 
@@ -88,6 +92,7 @@ impl Transaction {
             resp_body: Vec::new(),
             resp_headers: Vec::new(),
             req_headers: HashMap::new(),
+            cookies: HashMap::new(),
             config: con
         }
     }
@@ -148,7 +153,18 @@ impl Transaction {
 
             match key {
                 "Content-Length" => self.content_length = value.parse().unwrap(),
-                "Cookie" => {},
+                "Cookie" => {
+                    let data : String = value.parse().unwrap();
+                    for entry in data.split(";") {
+                        let fields : Vec<&str> = entry.split("=").collect();
+                        let key = fields[0].to_string();
+                        let value = fields[1].to_string();
+                        if key == "auth" {
+                            self.jwt = Some(value.clone());
+                        }
+                        self.cookies.insert(key, value);
+                    }
+                },
                 "Range" => {},
                 _ => {}
             }
@@ -187,6 +203,7 @@ impl Transaction {
         string.push("\r\n");
         return string.join("");
     }
+
 
     fn send_response<W: Write>(&mut self, mut stream : W) -> bool {
         let mut sb : Vec<String> = Vec::new();
@@ -245,10 +262,8 @@ impl Transaction {
                 self.resp_status = HttpOk;
                 return self.send_response(stream);
             },
-            Err(e) => panic!("Could not generate JWT")
+            Err(e) => panic!("Could not generate JWT: {}", e)
         }
-        println!("JWT: {:?} Duration:{:?}", token, duration);
-        return true;
     }
 
     fn handle_api_login<W: Write>(&mut self, stream : W) -> bool {
@@ -273,7 +288,7 @@ impl Transaction {
             let json : String = self.body.as_ref().unwrap().to_string();
             let c: Result<Credentials> = serde_json::from_str(&json);
             match c {
-                Err(E) => {
+                Err(_) => {
                     self.send_error(HttpBadRequest, "Missing key/value pairs in the request body.", stream);
                     return false;
                 },
@@ -291,8 +306,60 @@ impl Transaction {
     }
 
     fn handle_static_asset<W:Write>(&mut self, stream : W) -> bool {
-        let file_name = format!("{}{}",self.config.server_root, self.path.as_ref().unwrap());
-        println!("User is requesting : {}", file_name);
+        let req_path : &str = self.path.as_ref().unwrap();
+
+        //IDOR Redirection Attack Prevention
+        if req_path.contains("..") {
+            return self.send_error(HttpNotFound, "This file could not be found.", stream);
+        }
+
+        let file_name = format!("{}{}",self.config.server_root, req_path);
+        let index_name = format!("{}{}",self.config.server_root, "/index.html");
+
+        if Path::new(&file_name.clone()).exists() {
+            return self.send_file(file_name);
+        }
+        else if self.config.html5_fallback && Path::new(&index_name.clone()).exists() {
+            return self.send_file(index_name);
+        }
+        else {
+            let message = format!("File {} not found", file_name);
+            return self.send_error(HttpNotFound, &message, stream);
+        }
+    }
+
+    fn send_file(&mut self, fname : String) -> bool {
+        let file_size = fs::metadata( fname.clone() );
+        let mut size : u64 = 0;
+        match file_size {
+            Err(e) => {println!("Error: {}", e);},
+            Ok(t) => {
+                size = t.len();
+            }
+        }
+        
+        println!("File Size: {} for {}", size, fname);
+
+        let start : u64 = 0; 
+        let buffer_size : usize = (size - start).try_into().unwrap();;
+        let mut buf = vec![0; buffer_size];
+        
+        let file =  File::open(fname);
+        let contents : Option<String> = None;
+
+        match file {
+            Ok(mut f) => {
+                let r  = f.read_exact(&mut buf);
+                match r {
+                    Err(e) => println!("Could not access file: {}", e),
+                    Ok(c) => println!("Contents: {:?}", std::str::from_utf8(&buf))
+                }
+            },
+            Err(e) => {
+                println!("Could not access file: {}", e);
+            }
+        }
+
         return true;
     }
 
@@ -317,7 +384,7 @@ impl Transaction {
                 req_buffer.read_exact(&mut buf);
                 let data = std::str::from_utf8(&buf);
                 match data {
-                    Err(E) =>  panic!("Could not read data/body") ,
+                    Err(e) =>  panic!("Could not read data/body: {}", e) ,
                     Ok(t) =>  self.body = Some(t.to_string())
                 }
             }
@@ -333,6 +400,7 @@ impl Transaction {
                 self.handle_api(resp_buffer);
             }
             else if path.starts_with("/private") {
+                println!("> {:#?}", self);
                 if !self.verify_jwt() {
                     self.send_error(HttpPermissionDenied, "Permission denied. Please log in to access this resource.", resp_buffer);
                 }
@@ -357,6 +425,7 @@ impl Transaction {
             self.resp_body.clear();
             self.resp_headers.clear();
             self.req_headers.clear(); 
+            self.cookies.clear();
             self.content_length = 0;
             self.range_start = 0;
             self.range_end = 0;
