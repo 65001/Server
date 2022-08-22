@@ -114,7 +114,15 @@ impl Transaction {
     */
     fn parse_request<R: BufRead>(&mut self, r: &mut R) -> bool {
         let mut line = String::new();
-        let len = r.read_line(&mut line).unwrap();
+        let results = r.read_line(&mut line);
+        let mut len = 0;
+        match results {
+            Err(e) => { 
+            println!("Could not read line in parse request: {}", e);
+            return false;
+        },
+            Ok(v) => len = v
+        }
         
         if len < 2 {
             return false;
