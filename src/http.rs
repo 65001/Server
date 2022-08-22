@@ -15,11 +15,13 @@ use std::sync::Arc;
 use crate::http::Method::*;
 use crate::http::Version::*;
 use crate::http::ResponseStatus::*;
-
 use crate::credentials::Credentials;
-use serde_json::Result;
-use jwt_simple::prelude::*;
 use crate::server::Config;
+
+use serde_json::Result;
+use serde::{Deserialize, Serialize};
+use jwt_simple::prelude::*;
+
 
 #[derive(Debug)]
 #[derive(PartialEq)]
@@ -71,10 +73,18 @@ pub struct Transaction {
 
     jwt: Option<String>, 
 
-    range_start :u32, 
-    range_end: u32, 
+    range_start : Option<u32>, 
+    range_end: Option<u32>, 
 
     config: Arc<Config>
+}
+
+
+#[derive(Serialize, Deserialize)]
+#[derive(Debug)]
+struct Video {
+    name : String, 
+    size : u64
 }
 
 impl Transaction {
@@ -86,8 +96,8 @@ impl Transaction {
             jwt: None,
             body: None,
             path: None,
-            range_start: 0,
-            range_end: 0,
+            range_start: None,
+            range_end: None,
             content_length: 0,
             resp_body: Vec::new(),
             resp_headers: Vec::new(),
@@ -164,7 +174,11 @@ impl Transaction {
                         self.cookies.insert(key, value);
                     }
                 },
-                "Range" => { println!("Range {}", value); },
+                "Range" => { 
+                    let value : Vec<&str> = value.split("=").collect();
+                    let value : Vec<&str> = value[1].split("-").collect();
+                    println!("Range {:?}", value); 
+                },
                 _ => {}
             }
 
@@ -245,7 +259,34 @@ impl Transaction {
             self.handle_api_login(stream);
         }
         else if path == "/api/video" {
-
+            let current_dir : String = self.config.server_root.clone();
+            let walker = fs::read_dir(current_dir);
+            match walker {
+                Ok(scanner) => {
+                    let mut videos : Vec<Video> = Vec::new();
+                    for entry in scanner {
+                        let entry = entry.unwrap();
+                        let path = entry.path();
+                        let extension = path.extension();
+                        match extension {
+                            None => {},
+                            Some(ext) => {
+                                if ext != "mp4" {
+                                    continue;
+                                }
+                                let video : Video = Video{name: path.file_name().unwrap().to_str().unwrap().to_string(), size:  path.metadata().unwrap().len()};
+                                videos.push(video);
+                            }
+                        }
+                    }
+                    self.add_header("Content-Type", "application/json");
+                    self.resp_status = HttpOk;
+                    self.resp_body.extend(serde_json::to_string(&videos).unwrap().as_bytes().to_vec());
+                    self.send_response(stream);
+                }
+                Err(e) => {println!("Error when trying to scan directory: {}", e);}
+            }
+            
         }
         else {
             self.send_error(HttpNotFound, "API not implemented", stream);
@@ -484,8 +525,8 @@ impl Transaction {
             self.req_headers.clear(); 
             self.cookies.clear();
             self.content_length = 0;
-            self.range_start = 0;
-            self.range_end = 0;
+            self.range_start = None;
+            self.range_end = None;
            
             self.resp_status = HttpInternalError;
             self.method = HttpUnknown;
