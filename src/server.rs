@@ -1,6 +1,6 @@
 use std::net::{TcpListener, TcpStream};
 use std::thread;
-
+use threadpool::ThreadPool;
 use std::sync::Arc;
 
 use crate::http::Transaction;
@@ -29,10 +29,11 @@ impl Server {
 
     pub fn start(&self) {
         let listener = TcpListener::bind(format!("[::]:{}", self.configuration.port_number)).unwrap();
+        let pool = ThreadPool::new(64);
         for stream in listener.incoming() {
             let stream = stream.unwrap();
             let data : Arc<Config> = self.configuration.clone();
-            thread::spawn(move || {
+            pool.execute(move || {
                 Server::worker(stream,  data);
             });
         }
