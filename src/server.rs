@@ -39,7 +39,7 @@ impl Server {
 
     }
 
-    fn worker(mut stream : TcpStream, config : Arc<Config>) {
+    fn worker(stream : TcpStream, config : Arc<Config>) {
         //We don't handle the case when the client closes the connection all that well (?)
         let mut transaction : Transaction = Transaction::new(config);
         transaction.http_handle_transaction(stream);

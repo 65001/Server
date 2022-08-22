@@ -1,11 +1,13 @@
+use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
 use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::fs;
 use std::fs::File;
-use std::fs::FileType;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::net::TcpStream;
@@ -73,8 +75,8 @@ pub struct Transaction {
 
     jwt: Option<String>, 
 
-    range_start : Option<u32>, 
-    range_end: Option<u32>, 
+    range_start : Option<u64>, 
+    range_end: Option<u64>, 
 
     config: Arc<Config>
 }
@@ -112,7 +114,7 @@ impl Transaction {
     */
     fn parse_request<R: BufRead>(&mut self, r: &mut R) -> bool {
         let mut line = String::new();
-        let mut len = r.read_line(&mut line).unwrap();
+        let len = r.read_line(&mut line).unwrap();
         
         if len < 2 {
             return false;
@@ -148,7 +150,7 @@ impl Transaction {
 
     fn parse_headers<R: BufRead>(&mut self, r: &mut R) -> bool {
         for l in r.lines() {
-            let mut line = l.unwrap();
+            let line = l.unwrap();
             if line == "" {
                 return true;
             }
@@ -177,7 +179,16 @@ impl Transaction {
                 "Range" => { 
                     let value : Vec<&str> = value.split("=").collect();
                     let value : Vec<&str> = value[1].split("-").collect();
-                    println!("Range {:?}", value); 
+                    let len = value.len();
+                    match value[0].parse() {
+                        Ok(v) => self.range_start = Some(v),
+                        Err(_e) => {}
+                    };
+
+                    match value[1].parse() {
+                        Ok(v) => self.range_end = Some(v),
+                        Err(_e) => {}
+                    };
                 },
                 _ => {}
             }
@@ -220,7 +231,6 @@ impl Transaction {
     fn send_headers<W: Write>(&mut self, stream : &mut W) -> bool {
         let mut sb : Vec<String> = Vec::new();
         sb.push(self.start_response());
-        self.add_header("Content-Length", &self.resp_body.len().to_string());
         sb.push(self.resp_headers.join(""));
         sb.push("\r\n".to_string());
         let headers : String = sb.join("");
@@ -247,6 +257,7 @@ impl Transaction {
     }
 
     fn send_response<W: Write>(&mut self, mut stream : W) -> bool {
+        self.add_header("Content-Length", &self.resp_body.len().to_string());
         if !self.send_headers(&mut stream) {
             return false;
         }
@@ -303,8 +314,8 @@ impl Transaction {
                 let key = HS256Key::from_bytes( self.config.server_secret.as_bytes());
                 let claims = key.verify_token::<NoCustomClaims>(&jwt, Some(options));
                 match claims {
-                    Ok(c) =>  return true ,
-                    Err(e) => return false
+                    Ok(_c) =>  return true ,
+                    Err(_e) => return false
                 }
             }
         }
@@ -382,7 +393,7 @@ impl Transaction {
         return self.send_error(HttpNotImplemented,"API Method not Implemented", stream);
     }
 
-    fn handle_static_asset<W:Write>(&mut self, stream : W) -> bool {
+    fn handle_static_asset<W:Write>(&mut self, stream : &mut W) -> bool {
         let req_path : &str = self.path.as_ref().unwrap();
 
         //IDOR Redirection Attack Prevention
@@ -427,10 +438,10 @@ impl Transaction {
         }
     }
 
-    fn send_file<W:Write>(&mut self, path : &Path, stream : W) -> bool {
+    fn send_file<W:Write>(&mut self, path : &Path, stream : &mut W) -> bool {
         let file_size = path.metadata();
         let mut size : u64 = 0;
-        let mut extension : Option<&OsStr> = path.extension();
+        let extension : Option<&OsStr> = path.extension();
         match file_size {
             Err(e) => {println!("Error: {}", e);},
             Ok(t) => {
@@ -438,29 +449,50 @@ impl Transaction {
             }
         }
 
+        let mut partial_requested = false;
+        //Compute the actual Ranges we should be sending 
+        if let None = self.range_start {
+            self.range_start = Some(0);
+        }
+        else {
+            partial_requested = true;
+        }
 
-        let start : u64 = 0; 
-        let buffer_size : usize = (size - start).try_into().unwrap();
-        let mut buf = vec![0; buffer_size];
+        if let None = self.range_end {
+            self.range_end = Some(size);        
+        }
+        else {
+            self.range_end = Some(self.range_end.unwrap() + 1);
+        }
+
+
+
+        let buffer_size : u64 = self.range_end.unwrap() - self.range_start.unwrap();
         
         let file =  File::open(path);
-        let contents : Option<String> = None;
 
         self.add_header("Accept-Ranges", "bytes");
         let mime_type : String = self.guess_mime_type(extension).to_string();
         self.add_header("Content-Type", &mime_type);
+        self.add_header("Content-Range", &format!("bytes {}-{}/{}",self.range_start.unwrap() , self.range_end.unwrap() - 1, size)[..]);
+        self.add_header("Content-Length", &(buffer_size ).to_string());
 
         match file {
-            Ok(mut f) => {
-                let r  = f.read_exact(&mut buf);
-                match r {
-                    Err(e) => println!("Could not access file: {}", e),
-                    Ok(c) => {
-                        self.resp_status = HttpOk;
-                        self.resp_body.extend(buf);
-                        return self.send_response(stream);
-                    }
+            Ok(f) => {
+                let mut reader = BufReader::new(f);
+                reader.seek(SeekFrom::Start(self.range_start.unwrap()));
+                let mut reader = reader.take(buffer_size);
+                
+                self.resp_status = HttpOk;
+                if partial_requested {
+                    self.resp_status = HttpPartialContent;
                 }
+                self.send_headers(stream);
+                let state = io::copy(&mut reader,stream);
+                match state {
+                    Ok(_s) => {},
+                    Err(e) => println!("Failed to send data: {}", e)
+                };
             },
             Err(e) => {
                 println!("Could not access file: {}", e);
@@ -477,7 +509,7 @@ impl Transaction {
 
 
 
-    pub fn http_handle_transaction(&mut self, mut stream : TcpStream) -> bool {
+    pub fn http_handle_transaction(&mut self, stream : TcpStream) -> bool {
         loop {
             let mut req_buffer = BufReader::new(&stream);
             let mut resp_buffer = BufWriter::new(&stream);
@@ -486,7 +518,6 @@ impl Transaction {
             }
                        
             if self.content_length > 0 {
-                let content_length : usize = self.content_length;
                 let mut buf = vec![0u8; self.content_length];
                 req_buffer.read_exact(&mut buf);
                 let data = std::str::from_utf8(&buf);
@@ -509,11 +540,11 @@ impl Transaction {
                     self.send_error(HttpPermissionDenied, "Permission denied. Please log in to access this resource.", resp_buffer);
                 }
                 else {
-                    self.handle_static_asset(resp_buffer);
+                    self.handle_static_asset(&mut resp_buffer);
                 }
             }
             else {
-                self.handle_static_asset(resp_buffer);
+                self.handle_static_asset(&mut resp_buffer);
             }
 
             if self.version == Http1_0 {
@@ -534,6 +565,5 @@ impl Transaction {
             self.path = None; 
             self.body = None;
         }
-        return false;
     }
 }
