@@ -113,7 +113,6 @@ impl Transaction {
         //This means we don't have the Method, the path, or the Version
         //Therefore we MUST close the connection
         if split.len() < 3 {
-            println!("SPLIT 123: {:?}, {:?}", split, line);
             return false;
         }
 
@@ -124,7 +123,7 @@ impl Transaction {
             self.method = HttpPost;
         }
         else {
-            println!("SPLIT 456: {:?}", split);
+            self.method = HttpUnknown;
         }
 
         self.path = Some(split[1].to_string());
@@ -155,8 +154,8 @@ impl Transaction {
                     let data : String = value.parse().unwrap();
                     for entry in data.split(";") {
                         let fields : Vec<&str> = entry.split("=").collect();
-                        let key = fields[0].to_string();
-                        let value = fields[1].to_string();
+                        let key = fields[0].trim().to_string();
+                        let value = fields[1].trim().to_string();
                         if key == "auth" {
                             self.jwt = Some(value.clone());
                         }
@@ -237,6 +236,10 @@ impl Transaction {
         else if path == "/api/video" {
 
         }
+        else {
+            self.send_error(HttpNotFound, "API not implemented", stream);
+        }
+        
     }
 
     fn verify_jwt(&self) -> bool {
@@ -255,6 +258,17 @@ impl Transaction {
         }
     }
 
+    fn dump_jwt(&self, jwt : String) -> Option<String> {
+        let key = HS256Key::from_bytes( self.config.server_secret.as_bytes());
+        let claims = key.verify_token::<NoCustomClaims>(&jwt, None).unwrap();
+        let json : String = format!("{{\"sub\": \"{}\", \"iat\": {}, \"exp\": {} }}", 
+            claims.subject.unwrap(),
+            claims.issued_at.unwrap().as_secs(),
+            claims.expires_at.unwrap().as_secs()
+        );
+        return Some(json);
+    }
+
     fn generate_jwt<W: Write>(&mut self,stream : W, credentials : Credentials) -> bool{
         let key = HS256Key::from_bytes( self.config.server_secret.as_bytes());
         let duration = Duration::from_secs(self.config.token_expiration_time);
@@ -267,6 +281,9 @@ impl Transaction {
                 let cookie_value_sent : &str = &cookie_value[..];
                 self.add_header("Set-Cookie", cookie_value_sent);
                 self.resp_status = HttpOk;
+                let results = self.dump_jwt(v).unwrap();
+                self.resp_body.extend( results.as_bytes().to_vec());
+
                 return self.send_response(stream);
             },
             Err(e) => panic!("Could not generate JWT: {}", e)
@@ -276,9 +293,10 @@ impl Transaction {
     fn handle_api_login<W: Write>(&mut self, stream : W) -> bool {
         if self.method == HttpGet {
             self.add_header("Content-Type", "application/json");
-
             if self.verify_jwt() {
-
+                let results = self.dump_jwt(self.jwt.as_ref().unwrap().to_string()).unwrap();
+                self.resp_body.extend( results.as_bytes().to_vec());
+                return self.send_response(stream);
             }
             else {
                 self.resp_body.extend("{}".as_bytes().to_vec());
@@ -321,9 +339,10 @@ impl Transaction {
         }
 
         let file_name = format!("{}{}",self.config.server_root, req_path);
+        let file_path = Path::new(&file_name);
         let index_name = format!("{}{}",self.config.server_root, "/index.html");
 
-        if Path::new(&file_name.clone()).exists() {
+        if file_path.exists() && file_path.is_file() {
             return self.send_file(file_name, stream);
         }
         else if self.config.html5_fallback && Path::new(&index_name.clone()).exists() {
@@ -351,6 +370,8 @@ impl Transaction {
         
         let file =  File::open(fname);
         let contents : Option<String> = None;
+
+        self.add_header("Accept-Ranges", "bytes");
 
         match file {
             Ok(mut f) => {
@@ -400,11 +421,9 @@ impl Transaction {
 
             self.add_header("Server", "CS3214-Personal-Server");
             let path = self.path.as_ref().unwrap();
-
-            if !self.config.silent_mode {
-                println!("< {:#?}", self);
-            }
             
+            //println!("{:#?}", self);
+
             if path.starts_with("/api") {
                 self.handle_api(resp_buffer);
             }
@@ -428,7 +447,6 @@ impl Transaction {
             if self.version == Http1_0 {
                 return true;
             }
-            //println!("{:#?}", self);
             //Reset the state of the Transaction 
             self.resp_body.clear();
             self.resp_headers.clear();
