@@ -5,6 +5,8 @@ use std::io::Write;
 use std::io::Read;
 use std::fs;
 use std::fs::File;
+use std::fs::FileType;
+use std::ffi::OsStr;
 use std::path::Path;
 use std::net::TcpStream;
 use std::collections::HashMap;
@@ -201,8 +203,7 @@ impl Transaction {
         return string.join("");
     }
 
-    fn send_response<W: Write>(&mut self, mut stream : W) -> bool {
-
+    fn send_headers<W: Write>(&mut self, stream : &mut W) -> bool {
         let mut sb : Vec<String> = Vec::new();
         sb.push(self.start_response());
         self.add_header("Content-Length", &self.resp_body.len().to_string());
@@ -210,12 +211,15 @@ impl Transaction {
         sb.push("\r\n".to_string());
         let headers : String = sb.join("");
         match stream.write(headers.as_bytes()) {
-            Ok(_) => {},
+            Ok(_) => {return true;},
             Err(e) => {
                 println!("Failed sending response: {}", e);
                 return false;
             }
         }
+    }
+
+    fn send_body<W: Write>(&mut self, stream : &mut W) -> bool {
         let data : &[u8] = &self.resp_body.clone();
         match stream.write(data) {
             Ok(_) => {},
@@ -226,6 +230,13 @@ impl Transaction {
         }
         stream.flush().unwrap();
         return true;
+    }
+
+    fn send_response<W: Write>(&mut self, mut stream : W) -> bool {
+        if !self.send_headers(&mut stream) {
+            return false;
+        }
+        return self.send_body(&mut stream);
     }
 
     fn handle_api<W: Write>(&mut self, stream : W) {
@@ -340,13 +351,15 @@ impl Transaction {
 
         let file_name = format!("{}{}",self.config.server_root, req_path);
         let file_path = Path::new(&file_name);
-        let index_name = format!("{}{}",self.config.server_root, "/index.html");
 
         if file_path.exists() && file_path.is_file() {
-            return self.send_file(file_name, stream);
+            return self.send_file(file_path, stream);
         }
-        else if self.config.html5_fallback && Path::new(&index_name.clone()).exists() {
-            return self.send_file(index_name, stream);
+
+        let index_name = format!("{}{}",self.config.server_root, "/index.html");
+        let index_path = Path::new(&index_name);
+        if self.config.html5_fallback && index_path.exists() {
+            return self.send_file(index_path, stream);
         }
         else {
             let message = format!("File {} not found", file_name);
@@ -354,9 +367,29 @@ impl Transaction {
         }
     }
 
-    fn send_file<W:Write>(&mut self, fname : String, stream : W) -> bool {
-        let file_size = fs::metadata( fname.clone() );
+    fn guess_mime_type(&self, extension: Option<&OsStr> ) -> &str {
+        match extension  {
+            None => return "text/plain",
+            Some(value) => {
+                match value.to_str().unwrap() {
+                    "html" => return "text/html",
+                    "gif" => return "image/gif",
+                    "png" => return "image/png",
+                    "jpg" => return "image/jpeg",
+                    "js" => return "text/javascript",
+                    "mp4" => return "video/mp4",
+                    "svg" => return "image/svg+xml",
+                    "css" => return "text/css",
+                    _ => return "text/plain"
+                }
+            }
+        }
+    }
+
+    fn send_file<W:Write>(&mut self, path : &Path, stream : W) -> bool {
+        let file_size = path.metadata();
         let mut size : u64 = 0;
+        let mut extension : Option<&OsStr> = path.extension();
         match file_size {
             Err(e) => {println!("Error: {}", e);},
             Ok(t) => {
@@ -364,14 +397,17 @@ impl Transaction {
             }
         }
 
+
         let start : u64 = 0; 
         let buffer_size : usize = (size - start).try_into().unwrap();
         let mut buf = vec![0; buffer_size];
         
-        let file =  File::open(fname);
+        let file =  File::open(path);
         let contents : Option<String> = None;
 
         self.add_header("Accept-Ranges", "bytes");
+        let mime_type : String = self.guess_mime_type(extension).to_string();
+        self.add_header("Content-Type", &mime_type);
 
         match file {
             Ok(mut f) => {
