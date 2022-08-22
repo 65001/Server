@@ -19,8 +19,6 @@ use serde_json::Result;
 use jwt_simple::prelude::*;
 use crate::server::Config;
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 #[derive(Debug)]
 #[derive(PartialEq)]
 enum Method {
@@ -59,7 +57,7 @@ pub struct Transaction {
     version: Version,
 
     path: Option<String>,
-    body: Option<String>, 
+    body: Option<String>,  //Request Body
     content_length: usize, 
     resp_status : ResponseStatus, 
 
@@ -67,7 +65,7 @@ pub struct Transaction {
 
     cookies: HashMap<String, String>,
     resp_headers : Vec<String>, 
-    resp_body : Vec<String>, 
+    resp_body : Vec<u8>, 
 
     jwt: Option<String>, 
 
@@ -178,7 +176,7 @@ impl Transaction {
     Sending Response Section
     */
     fn send_error<W: Write>(&mut self, status : ResponseStatus, message : &str, stream : W) -> bool{
-        self.resp_body.push(message.to_string());
+        self.resp_body.extend(message.as_bytes().to_vec());
         self.add_header("Content-Type", "text/plain");
         self.resp_status = status;
         return self.send_response(stream);
@@ -204,27 +202,28 @@ impl Transaction {
         return string.join("");
     }
 
-
     fn send_response<W: Write>(&mut self, mut stream : W) -> bool {
+
         let mut sb : Vec<String> = Vec::new();
         sb.push(self.start_response());
-
-        let body = self.resp_body.join("");
-        
-        self.add_header("Content-Length", &body.len().to_string());
+        self.add_header("Content-Length", &self.resp_body.len().to_string());
         sb.push(self.resp_headers.join(""));
-
         sb.push("\r\n".to_string());
-        sb.push(body);
-        let response : String = sb.join("");
-
-        if !self.config.silent_mode {
-            println!("> {:#?}", self);
-        }
-
-        match stream.write(response.as_bytes()) {
+        let headers : String = sb.join("");
+        match stream.write(headers.as_bytes()) {
             Ok(_) => {},
-            Err(e) => println!("Failed sending response: {}", e),
+            Err(e) => {
+                println!("Failed sending response: {}", e);
+                return false;
+            }
+        }
+        let data : &[u8] = &self.resp_body.clone();
+        match stream.write(data) {
+            Ok(_) => {},
+            Err(e) => { 
+                println!("Failed sending response: {}", e);
+                return false; 
+            },
         }
         stream.flush().unwrap();
         return true;
@@ -241,11 +240,19 @@ impl Transaction {
     }
 
     fn verify_jwt(&self) -> bool {
-        if self.jwt == None {
-            return false;
+        let mut options = VerificationOptions::default();
+        options.time_tolerance = Some(Duration::from_secs(0));
+        match &self.jwt {
+            None => return false,
+            Some(jwt) => {
+                let key = HS256Key::from_bytes( self.config.server_secret.as_bytes());
+                let claims = key.verify_token::<NoCustomClaims>(&jwt, Some(options));
+                match claims {
+                    Ok(c) =>  return true ,
+                    Err(e) => return false
+                }
+            }
         }
-        //TODO: Add more JWT verification later
-        return true;
     }
 
     fn generate_jwt<W: Write>(&mut self,stream : W, credentials : Credentials) -> bool{
@@ -274,7 +281,7 @@ impl Transaction {
 
             }
             else {
-                self.resp_body.push("{}".to_string());
+                self.resp_body.extend("{}".as_bytes().to_vec());
             }
             self.resp_status = HttpOk;
             return self.send_response(stream);
@@ -317,10 +324,10 @@ impl Transaction {
         let index_name = format!("{}{}",self.config.server_root, "/index.html");
 
         if Path::new(&file_name.clone()).exists() {
-            return self.send_file(file_name);
+            return self.send_file(file_name, stream);
         }
         else if self.config.html5_fallback && Path::new(&index_name.clone()).exists() {
-            return self.send_file(index_name);
+            return self.send_file(index_name, stream);
         }
         else {
             let message = format!("File {} not found", file_name);
@@ -328,7 +335,7 @@ impl Transaction {
         }
     }
 
-    fn send_file(&mut self, fname : String) -> bool {
+    fn send_file<W:Write>(&mut self, fname : String, stream : W) -> bool {
         let file_size = fs::metadata( fname.clone() );
         let mut size : u64 = 0;
         match file_size {
@@ -337,11 +344,9 @@ impl Transaction {
                 size = t.len();
             }
         }
-        
-        println!("File Size: {} for {}", size, fname);
 
         let start : u64 = 0; 
-        let buffer_size : usize = (size - start).try_into().unwrap();;
+        let buffer_size : usize = (size - start).try_into().unwrap();
         let mut buf = vec![0; buffer_size];
         
         let file =  File::open(fname);
@@ -352,7 +357,11 @@ impl Transaction {
                 let r  = f.read_exact(&mut buf);
                 match r {
                     Err(e) => println!("Could not access file: {}", e),
-                    Ok(c) => println!("Contents: {:?}", std::str::from_utf8(&buf))
+                    Ok(c) => {
+                        self.resp_status = HttpOk;
+                        self.resp_body.extend(buf);
+                        return self.send_response(stream);
+                    }
                 }
             },
             Err(e) => {
@@ -400,7 +409,6 @@ impl Transaction {
                 self.handle_api(resp_buffer);
             }
             else if path.starts_with("/private") {
-                println!("> {:#?}", self);
                 if !self.verify_jwt() {
                     self.send_error(HttpPermissionDenied, "Permission denied. Please log in to access this resource.", resp_buffer);
                 }
