@@ -164,7 +164,7 @@ impl Transaction {
                         self.cookies.insert(key, value);
                     }
                 },
-                "Range" => {},
+                "Range" => { println!("Range {}", value); },
                 _ => {}
             }
 
@@ -475,11 +475,6 @@ impl Transaction {
                 self.handle_static_asset(resp_buffer);
             }
 
-            /*
-            let response = "HTTP/1.1 200 OK\r\n\r\n{}";
-            stream.write( response.as_bytes() ).unwrap();
-            stream.flush().unwrap();
-            */
             if self.version == Http1_0 {
                 return true;
             }
