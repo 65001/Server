@@ -113,7 +113,7 @@ impl Transaction {
     Parsing Section
     */
     fn parse_request<R: BufRead>(&mut self, r: &mut R) -> bool {
-        let mut line = String::new();
+        let mut line = String::with_capacity(80);
         let results = r.read_line(&mut line);
         let mut len = 0;
         match results {
@@ -138,14 +138,10 @@ impl Transaction {
             return false;
         }
 
-        if split[0] == "GET" {
-            self.method = HttpGet;
-        }
-        else if split[0] == "POST" {
-            self.method = HttpPost;
-        }
-        else {
-            self.method = HttpUnknown;
+        match split[0] {
+            "GET" => self.method = HttpGet, 
+            "POST" => self.method = HttpPost, 
+            _ => self.method = HttpUnknown
         }
 
         self.path = Some(split[1].to_string());

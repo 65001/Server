@@ -11,6 +11,7 @@ mod http;
 mod credentials;
 
 // cargo build && server_unit_test_pserv.py -vs ./../target/debug/server
+// server_bench.py -s ./../target/debug/server
 fn main() {
     //We use clap to build an argument parser
     let matches = App::new("Personal Server")
