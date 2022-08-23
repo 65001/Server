@@ -138,10 +138,14 @@ impl Transaction {
             return false;
         }
 
-        match split[0] {
-            "GET" => self.method = HttpGet, 
-            "POST" => self.method = HttpPost, 
-            _ => self.method = HttpUnknown
+        if split[0] == "GET" {
+            self.method = HttpGet;
+        }
+        else if split[0] == "POST" {
+            self.method = HttpPost;
+        }
+        else {
+            self.method = HttpUnknown;
         }
 
         self.path = Some(split[1].to_string());
